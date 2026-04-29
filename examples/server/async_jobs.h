@@ -42,6 +42,13 @@ struct AsyncGenerationJob {
     std::string result_media_mime_type;
     int result_frame_count = 0;
     int result_fps         = 0;
+    int progress_step      = 0;
+    int progress_steps     = 0;
+    float progress_time    = 0.0f;
+    float progress_percent = 0.0f;
+    int64_t progress_updated_at = 0;
+    bool cancel_requested  = false;
+    int64_t cancel_requested_at = 0;
     std::string error_code;
     std::string error_message;
 };
@@ -64,6 +71,8 @@ size_t count_pending_jobs(const AsyncJobManager& manager);
 std::string make_async_job_id(AsyncJobManager& manager);
 bool cancel_queued_job(AsyncJobManager& manager, AsyncGenerationJob& job);
 json make_async_job_json(const AsyncJobManager& manager, const AsyncGenerationJob& job);
+json make_async_job_progress_json(const AsyncJobManager& manager, const AsyncGenerationJob& job);
+void configure_async_progress_callback();
 bool execute_img_gen_job(ServerRuntime& runtime,
                          AsyncGenerationJob& job,
                          std::vector<std::string>& output_images,

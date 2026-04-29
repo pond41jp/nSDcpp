@@ -1,6 +1,7 @@
 set(TARGET sd-server)
 
 option(SD_SERVER_BUILD_FRONTEND "Build server frontend with pnpm" ON)
+option(SD_POSTGRESQL "Enable PostgreSQL persistence API for sd-server" OFF)
 
 set(FRONTEND_DIR "${CMAKE_CURRENT_SOURCE_DIR}/frontend")
 set(GENERATED_HTML_HEADER "${FRONTEND_DIR}/dist/gen_index_html.h")
@@ -73,6 +74,7 @@ add_executable(${TARGET}
     routes_openai.cpp
     routes_sdapi.cpp
     routes_sdcpp.cpp
+    routes_postgres.cpp
 )
 
 if(HAVE_FRONTEND_BUILD)
@@ -102,3 +104,10 @@ if(WIN32 AND NOT MSVC)
 endif()
 
 target_compile_features(${TARGET} PUBLIC c_std_11 cxx_std_17)
+
+if(SD_POSTGRESQL)
+    find_package(PostgreSQL REQUIRED)
+    target_compile_definitions(${TARGET} PRIVATE SD_USE_POSTGRESQL)
+    target_include_directories(${TARGET} PRIVATE ${PostgreSQL_INCLUDE_DIRS})
+    target_link_libraries(${TARGET} PRIVATE ${PostgreSQL_LIBRARIES})
+endif()

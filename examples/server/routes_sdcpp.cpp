@@ -185,7 +185,7 @@ static json make_vid_gen_features_json() {
         {"vae_tiling", true},
         {"cache", true},
         {"cancel_queued", true},
-        {"cancel_generating", false},
+        {"cancel_generating", true},
     };
 }
 
@@ -294,7 +294,7 @@ static json make_capabilities_json(ServerRuntime& runtime) {
     json top_level_output_formats = json::array();
     json top_level_features       = {
               {"cancel_queued", true},
-              {"cancel_generating", false},
+              {"cancel_generating", true},
     };
     std::string current_mode = "";
     if (supports_img) {
@@ -546,6 +546,28 @@ void register_sdcpp_api_endpoints(httplib::Server& svr, ServerRuntime& rt) {
         res.set_content(make_async_job_json(manager, *it->second).dump(), "application/json");
     });
 
+    svr.Get(R"(/sdcpp/v1/jobs/([A-Za-z0-9_\-]+)/progress)", [runtime](const httplib::Request& req, httplib::Response& res) {
+        AsyncJobManager& manager = *runtime->async_job_manager;
+        std::lock_guard<std::mutex> lock(manager.mutex);
+        purge_expired_jobs(manager);
+
+        std::string job_id = req.matches[1];
+        auto it            = manager.jobs.find(job_id);
+        if (it == manager.jobs.end()) {
+            if (manager.expired_jobs.find(job_id) != manager.expired_jobs.end()) {
+                res.status = 410;
+                res.set_content(R"({"error":"job expired"})", "application/json");
+            } else {
+                res.status = 404;
+                res.set_content(R"({"error":"job not found"})", "application/json");
+            }
+            return;
+        }
+
+        res.status = 200;
+        res.set_content(make_async_job_progress_json(manager, *it->second).dump(), "application/json");
+    });
+
     svr.Post(R"(/sdcpp/v1/jobs/([A-Za-z0-9_\-]+)/cancel)", [runtime](const httplib::Request& req, httplib::Response& res) {
         AsyncJobManager& manager = *runtime->async_job_manager;
         std::lock_guard<std::mutex> lock(manager.mutex);
@@ -577,8 +599,14 @@ void register_sdcpp_api_endpoints(httplib::Server& svr, ServerRuntime& rt) {
         }
 
         if (job.status == AsyncJobStatus::Generating) {
-            res.status = 409;
-            res.set_content(R"({"error":"job is currently generating and cannot be interrupted yet"})", "application/json");
+            job.cancel_requested    = true;
+            job.cancel_requested_at = unix_timestamp_now();
+            res.status = 202;
+            res.set_content(json({
+                {"accepted", true},
+                {"message", "cancellation requested; current generation will be discarded when it reaches a safe point"},
+                {"job", make_async_job_json(manager, job)}
+            }).dump(), "application/json");
             return;
         }
 

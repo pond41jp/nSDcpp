@@ -9,6 +9,37 @@
 #include "common/media_io.h"
 #include "common/resource_owners.hpp"
 
+namespace {
+std::mutex g_progress_mutex;
+AsyncGenerationJob* g_progress_job = nullptr;
+
+void sd_progress_cb(int step, int steps, float time, void*) {
+    std::lock_guard<std::mutex> guard(g_progress_mutex);
+    if (g_progress_job == nullptr) {
+        return;
+    }
+    g_progress_job->progress_step       = std::max(step, 0);
+    g_progress_job->progress_steps      = std::max(steps, 0);
+    g_progress_job->progress_time       = std::max(time, 0.0f);
+    g_progress_job->progress_updated_at = unix_timestamp_now();
+    if (g_progress_job->progress_steps > 0) {
+        g_progress_job->progress_percent = std::min(
+            100.0f,
+            (100.0f * static_cast<float>(g_progress_job->progress_step)) /
+                static_cast<float>(g_progress_job->progress_steps));
+    }
+}
+
+void set_active_progress_job(AsyncGenerationJob* job) {
+    std::lock_guard<std::mutex> guard(g_progress_mutex);
+    g_progress_job = job;
+}
+}  // namespace
+
+void configure_async_progress_callback() {
+    sd_set_progress_callback(sd_progress_cb, nullptr);
+}
+
 const char* async_job_kind_name(AsyncJobKind kind) {
     switch (kind) {
         case AsyncJobKind::ImgGen:
@@ -99,6 +130,8 @@ bool cancel_queued_job(AsyncJobManager& manager, AsyncGenerationJob& job) {
     job.result_media_mime_type.clear();
     job.result_frame_count = 0;
     job.result_fps         = 0;
+    job.cancel_requested   = true;
+    job.cancel_requested_at = job.completed_at;
     job.error_code         = "cancelled";
     job.error_message      = "job cancelled by client";
     return true;
@@ -113,6 +146,9 @@ json make_async_job_json(const AsyncJobManager& manager, const AsyncGenerationJo
     result["started"]        = job.started_at == 0 ? json(nullptr) : json(job.started_at);
     result["completed"]      = job.completed_at == 0 ? json(nullptr) : json(job.completed_at);
     result["queue_position"] = 0;
+    result["progress"]       = make_async_job_progress_json(manager, job);
+    result["cancel_requested"] = job.cancel_requested;
+    result["cancel_requested_at"] = job.cancel_requested_at == 0 ? json(nullptr) : json(job.cancel_requested_at);
 
     if (job.status == AsyncJobStatus::Queued) {
         size_t position = 1;
@@ -163,6 +199,41 @@ json make_async_job_json(const AsyncJobManager& manager, const AsyncGenerationJo
     return result;
 }
 
+json make_async_job_progress_json(const AsyncJobManager& manager, const AsyncGenerationJob& job) {
+    json progress = {
+        {"status", async_job_status_name(job.status)},
+        {"step", job.progress_step},
+        {"steps", job.progress_steps},
+        {"percent", job.progress_percent},
+        {"elapsed_sec", job.progress_time},
+        {"updated_at", job.progress_updated_at == 0 ? json(nullptr) : json(job.progress_updated_at)},
+        {"queue_position", 0},
+        {"cancel_requested", job.cancel_requested},
+        {"cancel_requested_at", job.cancel_requested_at == 0 ? json(nullptr) : json(job.cancel_requested_at)},
+    };
+    if (job.status == AsyncJobStatus::Queued) {
+        size_t position = 1;
+        for (const auto& queued_id : manager.queue) {
+            if (queued_id == job.id) {
+                progress["queue_position"] = position;
+                break;
+            }
+            ++position;
+        }
+    }
+    if (job.status == AsyncJobStatus::Completed) {
+        progress["step"]       = job.progress_steps > 0 ? job.progress_steps : job.progress_step;
+        progress["steps"]      = job.progress_steps;
+        progress["percent"]    = 100.0f;
+        progress["is_done"]    = true;
+    } else if (job.status == AsyncJobStatus::Failed || job.status == AsyncJobStatus::Cancelled) {
+        progress["is_done"] = true;
+    } else {
+        progress["is_done"] = false;
+    }
+    return progress;
+}
+
 bool execute_img_gen_job(ServerRuntime& runtime,
                          AsyncGenerationJob& job,
                          std::vector<std::string>& output_images,
@@ -173,7 +244,9 @@ bool execute_img_gen_job(ServerRuntime& runtime,
 
     {
         std::lock_guard<std::mutex> lock(*runtime.sd_ctx_mutex);
+        set_active_progress_job(&job);
         sd_image_t* raw_results = generate_image(runtime.sd_ctx, &params);
+        set_active_progress_job(nullptr);
         results.adopt(raw_results, params.batch_count);
     }
 
@@ -235,7 +308,9 @@ bool execute_vid_gen_job(ServerRuntime& runtime,
 
     {
         std::lock_guard<std::mutex> lock(*runtime.sd_ctx_mutex);
+        set_active_progress_job(&job);
         sd_image_t* raw_results = generate_video(runtime.sd_ctx, &params, &num_results);
+        set_active_progress_job(nullptr);
         results.adopt(raw_results, num_results);
     }
 
@@ -291,6 +366,18 @@ void async_job_worker(ServerRuntime& runtime) {
             job             = it->second;
             job->status     = AsyncJobStatus::Generating;
             job->started_at = unix_timestamp_now();
+            job->progress_step = 0;
+            job->progress_steps = 0;
+            job->progress_time = 0.0f;
+            job->progress_percent = 0.0f;
+            job->progress_updated_at = job->started_at;
+            if (job->cancel_requested) {
+                job->status       = AsyncJobStatus::Cancelled;
+                job->completed_at = unix_timestamp_now();
+                job->error_code   = "cancelled";
+                job->error_message = "job cancelled by client";
+                continue;
+            }
         }
 
         std::vector<std::string> output_images;
@@ -323,8 +410,18 @@ void async_job_worker(ServerRuntime& runtime) {
             }
 
             job->completed_at = unix_timestamp_now();
-            if (ok) {
+            if (job->cancel_requested) {
+                job->status        = AsyncJobStatus::Cancelled;
+                job->error_code    = "cancelled";
+                job->error_message = "job cancelled by client";
+                job->result_images_b64.clear();
+                job->result_media_b64.clear();
+                job->result_media_mime_type.clear();
+                job->result_frame_count = 0;
+                job->result_fps         = 0;
+            } else if (ok) {
                 job->status                 = AsyncJobStatus::Completed;
+                job->progress_percent       = 100.0f;
                 job->result_images_b64      = std::move(output_images);
                 job->result_media_b64       = std::move(output_media_b64);
                 job->result_media_mime_type = std::move(output_media_mime_type);

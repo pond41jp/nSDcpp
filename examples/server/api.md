@@ -8,6 +8,11 @@ The server currently exposes three API families:
 - `Stable Diffusion WebUI API` under `/sdapi/v1/...`
 - `sdcpp API` under `/sdcpp/v1/...`
 
+Additional persistence API:
+
+- `PostgreSQL Persistence API` under `/sdcpp/v1/postgres/...`
+- detailed spec: `examples/server/postgresql_api.md`
+
 The `sdcpp API` is the native API surface.
 Its request schema is the same schema used by `sd_cpp_extra_args`.
 
@@ -54,6 +59,7 @@ Current endpoints include:
 - `GET /sdcpp/v1/capabilities`
 - `POST /sdcpp/v1/img_gen`
 - `GET /sdcpp/v1/jobs/{id}`
+- `GET /sdcpp/v1/jobs/{id}/progress`
 - `POST /sdcpp/v1/jobs/{id}/cancel`
 - `POST /sdcpp/v1/vid_gen`
 
@@ -378,6 +384,16 @@ Common job shape:
   "started": null,
   "completed": null,
   "queue_position": 2,
+  "progress": {
+    "status": "queued",
+    "step": 0,
+    "steps": 0,
+    "percent": 0.0,
+    "elapsed_sec": 0.0,
+    "updated_at": null,
+    "queue_position": 2,
+    "is_done": false
+  },
   "result": null,
   "error": null
 }
@@ -394,6 +410,7 @@ Field types:
 | `started` | `integer \| null` |
 | `completed` | `integer \| null` |
 | `queue_position` | `integer` |
+| `progress` | `object` |
 | `result` | `object \| null` |
 | `error` | `object \| null` |
 
@@ -620,15 +637,61 @@ Typical status codes:
 - `404 Not Found`
 - `410 Gone`
 
-#### `POST /sdcpp/v1/jobs/{id}/cancel`
+#### `GET /sdcpp/v1/jobs/{id}/progress`
 
-Attempts to cancel an accepted job.
+Returns progress-only data for the job.
+
+Example response:
+
+```json
+{
+  "status": "generating",
+  "step": 14,
+  "steps": 28,
+  "percent": 50.0,
+  "elapsed_sec": 3.2,
+  "updated_at": 1775401206,
+  "queue_position": 0,
+  "is_done": false
+}
+```
+
+Field types:
+
+| Field | Type |
+| --- | --- |
+| `status` | `string` |
+| `step` | `integer` |
+| `steps` | `integer` |
+| `percent` | `number` |
+| `elapsed_sec` | `number` |
+| `updated_at` | `integer \| null` |
+| `queue_position` | `integer` |
+| `is_done` | `boolean` |
 
 Typical status codes:
 
 - `200 OK`
 - `404 Not Found`
-- `409 Conflict`
+- `410 Gone`
+
+#### `POST /sdcpp/v1/jobs/{id}/cancel`
+
+Attempts to cancel an accepted job.
+
+Behavior:
+
+- `queued` job: cancelled immediately and returns `200 OK`
+- `generating` job: cancellation request is accepted and returns `202 Accepted`
+  - generation may continue until a safe completion point
+  - final status becomes `cancelled` and generated payload is discarded
+- terminal states (`completed`/`failed`/`cancelled`): current job state is returned with `200 OK`
+
+Typical status codes:
+
+- `200 OK`
+- `202 Accepted`
+- `404 Not Found`
 - `410 Gone`
 
 ### Request Body
