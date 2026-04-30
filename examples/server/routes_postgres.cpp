@@ -1,6 +1,7 @@
 #include "routes.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -216,7 +217,22 @@ static bool ensure_table(PGconn* conn, std::string& error) {
         ");"
         "CREATE INDEX IF NOT EXISTS idx_sdcpp_records_created_at ON sdcpp_records(created_at DESC);"
         "CREATE INDEX IF NOT EXISTS idx_sdcpp_records_rating ON sdcpp_records(rating DESC);"
-        "CREATE INDEX IF NOT EXISTS idx_sdcpp_records_tags ON sdcpp_records USING GIN(tags);";
+        "CREATE INDEX IF NOT EXISTS idx_sdcpp_records_tags ON sdcpp_records USING GIN(tags);"
+        "CREATE TABLE IF NOT EXISTS sdcpp_schema_meta ("
+        "key TEXT PRIMARY KEY,"
+        "value TEXT NOT NULL,"
+        "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+        ");"
+        "INSERT INTO sdcpp_schema_meta(key, value) VALUES ('schema_version','1') "
+        "ON CONFLICT (key) DO NOTHING;"
+        "CREATE TABLE IF NOT EXISTS sdcpp_audit_log ("
+        "id BIGSERIAL PRIMARY KEY,"
+        "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
+        "action TEXT NOT NULL,"
+        "record_id BIGINT,"
+        "details JSONB NOT NULL DEFAULT '{}'::jsonb"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_sdcpp_audit_created_at ON sdcpp_audit_log(created_at DESC);";
 
     PGresult* result = PQexec(conn, ddl);
     if (PQresultStatus(result) != PGRES_COMMAND_OK) {
@@ -246,6 +262,50 @@ static bool open_connection(const PostgresConfig& cfg, PgConnHolder& holder, std
         return false;
     }
     return ensure_table(holder.conn, error);
+}
+
+static void write_audit_log(PGconn* conn,
+                            const std::string& action,
+                            int64_t record_id,
+                            const json& details) {
+    std::string sql = "INSERT INTO sdcpp_audit_log(action, record_id, details) VALUES ("
+                      + sql_quote(action) + ","
+                      + (record_id > 0 ? std::to_string(record_id) : "NULL") + ","
+                      + sql_quote(details.dump()) + "::jsonb)";
+    PGresult* result = PQexec(conn, sql.c_str());
+    if (result != nullptr) {
+        PQclear(result);
+    }
+}
+
+static bool fetch_one_text(PGconn* conn, const std::string& sql, std::string& out, std::string& error) {
+    PGresult* result = PQexec(conn, sql.c_str());
+    if (PQresultStatus(result) != PGRES_TUPLES_OK || PQntuples(result) == 0 || PQgetisnull(result, 0, 0)) {
+        error = PQerrorMessage(conn);
+        PQclear(result);
+        return false;
+    }
+    out = PQgetvalue(result, 0, 0);
+    PQclear(result);
+    return true;
+}
+
+static bool fetch_record_for_rekey(PGconn* conn,
+                                   int64_t id,
+                                   bool& has_password,
+                                   std::string& password_cipher,
+                                   std::string& error) {
+    std::string sql = "SELECT has_password, password_cipher FROM sdcpp_records WHERE id = " + std::to_string(id);
+    PGresult* result = PQexec(conn, sql.c_str());
+    if (PQresultStatus(result) != PGRES_TUPLES_OK || PQntuples(result) == 0) {
+        error = PQerrorMessage(conn);
+        PQclear(result);
+        return false;
+    }
+    has_password = std::string(PQgetvalue(result, 0, 0)) == "t";
+    password_cipher = PQgetisnull(result, 0, 1) ? "" : PQgetvalue(result, 0, 1);
+    PQclear(result);
+    return true;
 }
 #endif
 
@@ -356,7 +416,17 @@ static void register_unavailable_postgres_endpoints(httplib::Server& svr) {
     };
 
     svr.Post("/sdcpp/v1/postgres/config", unavailable);
+    svr.Get("/sdcpp/v1/postgres/health", unavailable);
+    svr.Get("/sdcpp/v1/postgres/schema", unavailable);
+    svr.Post("/sdcpp/v1/postgres/schema/migrate", unavailable);
+    svr.Get("/sdcpp/v1/postgres/stats", unavailable);
+    svr.Get("/sdcpp/v1/postgres/tags", unavailable);
+    svr.Post("/sdcpp/v1/postgres/tags/rename", unavailable);
+    svr.Post("/sdcpp/v1/postgres/rekey-master-password", unavailable);
+    svr.Get("/sdcpp/v1/postgres/audit", unavailable);
     svr.Post("/sdcpp/v1/postgres/records", unavailable);
+    svr.Post("/sdcpp/v1/postgres/records/archive", unavailable);
+    svr.Post("/sdcpp/v1/postgres/records/bulk-delete", unavailable);
     svr.Post("/sdcpp/v1/postgres/query", unavailable);
     svr.Patch(R"(/sdcpp/v1/postgres/records/(\d+))", unavailable);
     svr.Delete(R"(/sdcpp/v1/postgres/records/(\d+))", unavailable);
@@ -368,6 +438,181 @@ void register_postgres_endpoints(httplib::Server& svr, ServerRuntime&) {
 #ifndef SD_USE_POSTGRESQL
     register_unavailable_postgres_endpoints(svr);
 #else
+    svr.Get("/sdcpp/v1/postgres/health", [](const httplib::Request&, httplib::Response& res) {
+        PostgresConfig cfg = load_config();
+        std::string error;
+        PgConnHolder holder;
+        if (!open_connection(cfg, holder, error)) {
+            res.status = 200;
+            res.set_content(json({
+                {"ok", false},
+                {"connected", false},
+                {"schema_ready", false},
+                {"message", error}
+            }).dump(), "application/json");
+            return;
+        }
+
+        std::string version;
+        if (!fetch_one_text(holder.conn, "SELECT version()", version, error)) {
+            version = "";
+        }
+        res.status = 200;
+        res.set_content(json({
+            {"ok", true},
+            {"connected", true},
+            {"schema_ready", true},
+            {"server_version", version}
+        }).dump(), "application/json");
+    });
+
+    svr.Get("/sdcpp/v1/postgres/schema", [](const httplib::Request&, httplib::Response& res) {
+        PostgresConfig cfg = load_config();
+        std::string error;
+        PgConnHolder holder;
+        if (!open_connection(cfg, holder, error)) {
+            res.status = 400;
+            res.set_content(json({{"error", error}}).dump(), "application/json");
+            return;
+        }
+
+        std::string version = "1";
+        fetch_one_text(holder.conn,
+                       "SELECT value FROM sdcpp_schema_meta WHERE key = 'schema_version'",
+                       version,
+                       error);
+        res.status = 200;
+        res.set_content(json({
+            {"schema_version", version},
+            {"tables", json::array({"sdcpp_records", "sdcpp_schema_meta", "sdcpp_audit_log"})}
+        }).dump(), "application/json");
+    });
+
+    svr.Post("/sdcpp/v1/postgres/schema/migrate", [](const httplib::Request&, httplib::Response& res) {
+        PostgresConfig cfg = load_config();
+        std::string error;
+        PgConnHolder holder;
+        if (!open_connection(cfg, holder, error)) {
+            res.status = 400;
+            res.set_content(json({{"error", error}}).dump(), "application/json");
+            return;
+        }
+        if (!ensure_table(holder.conn, error)) {
+            res.status = 500;
+            res.set_content(json({{"error", "migration failed"}, {"message", error}}).dump(), "application/json");
+            return;
+        }
+        write_audit_log(holder.conn, "schema_migrate", 0, json::object());
+        res.status = 200;
+        res.set_content(json({{"ok", true}, {"message", "schema migration applied"}}).dump(), "application/json");
+    });
+
+    svr.Get("/sdcpp/v1/postgres/stats", [](const httplib::Request&, httplib::Response& res) {
+        PostgresConfig cfg = load_config();
+        std::string error;
+        PgConnHolder holder;
+        if (!open_connection(cfg, holder, error)) {
+            res.status = 400;
+            res.set_content(json({{"error", error}}).dump(), "application/json");
+            return;
+        }
+
+        std::string total_rows = "0";
+        std::string encrypted_rows = "0";
+        std::string password_rows = "0";
+        std::string total_tags = "0";
+        std::string total_bytes = "0";
+        fetch_one_text(holder.conn, "SELECT COUNT(*)::text FROM sdcpp_records", total_rows, error);
+        fetch_one_text(holder.conn, "SELECT COUNT(*)::text FROM sdcpp_records WHERE is_encrypted = TRUE", encrypted_rows, error);
+        fetch_one_text(holder.conn, "SELECT COUNT(*)::text FROM sdcpp_records WHERE has_password = TRUE", password_rows, error);
+        fetch_one_text(holder.conn, "SELECT COUNT(DISTINCT tag)::text FROM (SELECT unnest(tags) AS tag FROM sdcpp_records) t", total_tags, error);
+        fetch_one_text(holder.conn, "SELECT COALESCE(SUM(octet_length(payload_text)),0)::text FROM sdcpp_records", total_bytes, error);
+
+        res.status = 200;
+        res.set_content(json({
+            {"total_records", std::stoll(total_rows)},
+            {"encrypted_records", std::stoll(encrypted_rows)},
+            {"password_protected_records", std::stoll(password_rows)},
+            {"unique_tags", std::stoll(total_tags)},
+            {"payload_total_bytes", std::stoll(total_bytes)}
+        }).dump(), "application/json");
+    });
+
+    svr.Get("/sdcpp/v1/postgres/tags", [](const httplib::Request&, httplib::Response& res) {
+        PostgresConfig cfg = load_config();
+        std::string error;
+        PgConnHolder holder;
+        if (!open_connection(cfg, holder, error)) {
+            res.status = 400;
+            res.set_content(json({{"error", error}}).dump(), "application/json");
+            return;
+        }
+        const std::string sql =
+            "SELECT tag, COUNT(*)::bigint AS count "
+            "FROM (SELECT unnest(tags) AS tag FROM sdcpp_records) t "
+            "GROUP BY tag ORDER BY count DESC, tag ASC";
+        PGresult* result = PQexec(holder.conn, sql.c_str());
+        if (PQresultStatus(result) != PGRES_TUPLES_OK) {
+            error = PQerrorMessage(holder.conn);
+            PQclear(result);
+            res.status = 500;
+            res.set_content(json({{"error", "query failed"}, {"message", error}}).dump(), "application/json");
+            return;
+        }
+        json tags = json::array();
+        for (int i = 0; i < PQntuples(result); ++i) {
+            tags.push_back({
+                {"tag", PQgetvalue(result, i, 0)},
+                {"count", std::stoll(PQgetvalue(result, i, 1))}
+            });
+        }
+        PQclear(result);
+        res.status = 200;
+        res.set_content(json({{"tags", tags}}).dump(), "application/json");
+    });
+
+    svr.Post("/sdcpp/v1/postgres/tags/rename", [](const httplib::Request& req, httplib::Response& res) {
+        try {
+            json body = json::parse(req.body.empty() ? "{}" : req.body);
+            const std::string from_tag = body.value("from", "");
+            const std::string to_tag = body.value("to", "");
+            if (from_tag.empty() || to_tag.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"from and to are required"})", "application/json");
+                return;
+            }
+
+            PostgresConfig cfg = load_config();
+            std::string error;
+            PgConnHolder holder;
+            if (!open_connection(cfg, holder, error)) {
+                res.status = 400;
+                res.set_content(json({{"error", error}}).dump(), "application/json");
+                return;
+            }
+
+            std::string sql =
+                "UPDATE sdcpp_records SET tags = array_replace(tags, " + sql_quote(from_tag) + ", " + sql_quote(to_tag) + ") "
+                "WHERE " + sql_quote(from_tag) + " = ANY(tags)";
+            PGresult* result = PQexec(holder.conn, sql.c_str());
+            if (PQresultStatus(result) != PGRES_COMMAND_OK) {
+                error = PQerrorMessage(holder.conn);
+                PQclear(result);
+                res.status = 500;
+                res.set_content(json({{"error", "rename failed"}, {"message", error}}).dump(), "application/json");
+                return;
+            }
+            const int64_t updated = std::atoll(PQcmdTuples(result));
+            PQclear(result);
+            write_audit_log(holder.conn, "tags_rename", 0, json({{"from", from_tag}, {"to", to_tag}, {"updated", updated}}));
+            res.status = 200;
+            res.set_content(json({{"ok", true}, {"updated_records", updated}}).dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", "invalid request"}, {"message", e.what()}}).dump(), "application/json");
+        }
+    });
+
     svr.Post("/sdcpp/v1/postgres/config", [](const httplib::Request& req, httplib::Response& res) {
         try {
             json body       = json::parse(req.body.empty() ? "{}" : req.body);
@@ -482,8 +727,185 @@ void register_postgres_endpoints(httplib::Server& svr, ServerRuntime&) {
                 {"has_password", has_password},
             };
             PQclear(result);
+            write_audit_log(holder.conn, "record_create", out["id"].get<int64_t>(), json({
+                {"encrypted", encrypted},
+                {"has_password", has_password}
+            }));
             res.status = 201;
             res.set_content(out.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", "invalid request"}, {"message", e.what()}}).dump(), "application/json");
+        }
+    });
+
+    svr.Post("/sdcpp/v1/postgres/records/archive", [](const httplib::Request& req, httplib::Response& res) {
+        try {
+            json body = json::parse(req.body.empty() ? "{}" : req.body);
+            PostgresConfig cfg = load_config();
+            std::string error;
+            PgConnHolder holder;
+            if (!open_connection(cfg, holder, error)) {
+                res.status = 400;
+                res.set_content(json({{"error", error}}).dump(), "application/json");
+                return;
+            }
+
+            const bool dry_run = body.value("dry_run", true);
+            int older_than_days = body.value("older_than_days", 30);
+            if (older_than_days < 1) {
+                older_than_days = 1;
+            }
+
+            const std::string ensure_archive_table =
+                "CREATE TABLE IF NOT EXISTS sdcpp_records_archive AS "
+                "SELECT * FROM sdcpp_records WITH NO DATA";
+            PGresult* ensure_result = PQexec(holder.conn, ensure_archive_table.c_str());
+            if (PQresultStatus(ensure_result) != PGRES_COMMAND_OK) {
+                error = PQerrorMessage(holder.conn);
+                PQclear(ensure_result);
+                res.status = 500;
+                res.set_content(json({{"error", "archive setup failed"}, {"message", error}}).dump(), "application/json");
+                return;
+            }
+            PQclear(ensure_result);
+
+            std::string count_sql =
+                "SELECT COUNT(*)::text FROM sdcpp_records WHERE created_at < NOW() - INTERVAL '"
+                + std::to_string(older_than_days) + " days'";
+            std::string count_text = "0";
+            fetch_one_text(holder.conn, count_sql, count_text, error);
+            int64_t candidate = std::stoll(count_text);
+
+            if (dry_run) {
+                res.status = 200;
+                res.set_content(json({
+                    {"ok", true},
+                    {"dry_run", true},
+                    {"candidate_records", candidate}
+                }).dump(), "application/json");
+                return;
+            }
+
+            const std::string insert_archive_sql =
+                "INSERT INTO sdcpp_records_archive "
+                "SELECT * FROM sdcpp_records WHERE created_at < NOW() - INTERVAL '"
+                + std::to_string(older_than_days) + " days'";
+            PGresult* insert_result = PQexec(holder.conn, insert_archive_sql.c_str());
+            if (PQresultStatus(insert_result) != PGRES_COMMAND_OK) {
+                error = PQerrorMessage(holder.conn);
+                PQclear(insert_result);
+                res.status = 500;
+                res.set_content(json({{"error", "archive insert failed"}, {"message", error}}).dump(), "application/json");
+                return;
+            }
+            PQclear(insert_result);
+
+            const std::string delete_sql =
+                "DELETE FROM sdcpp_records WHERE created_at < NOW() - INTERVAL '"
+                + std::to_string(older_than_days) + " days'";
+            PGresult* delete_result = PQexec(holder.conn, delete_sql.c_str());
+            if (PQresultStatus(delete_result) != PGRES_COMMAND_OK) {
+                error = PQerrorMessage(holder.conn);
+                PQclear(delete_result);
+                res.status = 500;
+                res.set_content(json({{"error", "archive delete failed"}, {"message", error}}).dump(), "application/json");
+                return;
+            }
+            const int64_t moved = std::atoll(PQcmdTuples(delete_result));
+            PQclear(delete_result);
+            write_audit_log(holder.conn, "records_archive", 0, json({
+                {"older_than_days", older_than_days},
+                {"moved", moved}
+            }));
+            res.status = 200;
+            res.set_content(json({
+                {"ok", true},
+                {"dry_run", false},
+                {"moved_records", moved}
+            }).dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", "invalid request"}, {"message", e.what()}}).dump(), "application/json");
+        }
+    });
+
+    svr.Post("/sdcpp/v1/postgres/records/bulk-delete", [](const httplib::Request& req, httplib::Response& res) {
+        try {
+            json body = json::parse(req.body.empty() ? "{}" : req.body);
+            PostgresConfig cfg = load_config();
+            std::string error;
+            PgConnHolder holder;
+            if (!open_connection(cfg, holder, error)) {
+                res.status = 400;
+                res.set_content(json({{"error", error}}).dump(), "application/json");
+                return;
+            }
+            const bool dry_run = body.value("dry_run", true);
+            std::vector<std::string> where;
+            if (body.contains("ids") && body["ids"].is_array() && !body["ids"].empty()) {
+                std::string ids = "";
+                for (size_t i = 0; i < body["ids"].size(); ++i) {
+                    if (!body["ids"][i].is_number_integer()) {
+                        continue;
+                    }
+                    if (!ids.empty()) {
+                        ids += ",";
+                    }
+                    ids += std::to_string(body["ids"][i].get<int64_t>());
+                }
+                if (!ids.empty()) {
+                    where.push_back("id IN (" + ids + ")");
+                }
+            }
+            if (body.contains("tags_and") && body["tags_and"].is_array() && !body["tags_and"].empty()) {
+                std::vector<std::string> tags;
+                for (const auto& t : body["tags_and"]) {
+                    if (t.is_string()) {
+                        tags.push_back(t.get<std::string>());
+                    }
+                }
+                where.push_back("tags @> " + sql_quote(sql_text_array_literal(tags)) + "::text[]");
+            }
+            if (body.contains("older_than_days")) {
+                int older_than_days = std::max(body.value("older_than_days", 1), 1);
+                where.push_back("created_at < NOW() - INTERVAL '" + std::to_string(older_than_days) + " days'");
+            }
+            if (where.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"at least one delete condition is required"})", "application/json");
+                return;
+            }
+            std::string where_sql = "";
+            for (size_t i = 0; i < where.size(); ++i) {
+                if (i > 0) {
+                    where_sql += " AND ";
+                }
+                where_sql += where[i];
+            }
+            std::string count_sql = "SELECT COUNT(*)::text FROM sdcpp_records WHERE " + where_sql;
+            std::string count_text = "0";
+            fetch_one_text(holder.conn, count_sql, count_text, error);
+            int64_t candidate = std::stoll(count_text);
+            if (dry_run) {
+                res.status = 200;
+                res.set_content(json({{"ok", true}, {"dry_run", true}, {"candidate_records", candidate}}).dump(), "application/json");
+                return;
+            }
+            std::string delete_sql = "DELETE FROM sdcpp_records WHERE " + where_sql;
+            PGresult* result = PQexec(holder.conn, delete_sql.c_str());
+            if (PQresultStatus(result) != PGRES_COMMAND_OK) {
+                error = PQerrorMessage(holder.conn);
+                PQclear(result);
+                res.status = 500;
+                res.set_content(json({{"error", "bulk delete failed"}, {"message", error}}).dump(), "application/json");
+                return;
+            }
+            const int64_t deleted = std::atoll(PQcmdTuples(result));
+            PQclear(result);
+            write_audit_log(holder.conn, "records_bulk_delete", 0, json({{"deleted", deleted}, {"conditions", body}}));
+            res.status = 200;
+            res.set_content(json({{"ok", true}, {"dry_run", false}, {"deleted_records", deleted}}).dump(), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(json({{"error", "invalid request"}, {"message", e.what()}}).dump(), "application/json");
@@ -601,6 +1023,9 @@ void register_postgres_endpoints(httplib::Server& svr, ServerRuntime&) {
             PQclear(result);
             res.status = 200;
             res.set_content(json({{"records", rows}}).dump(), "application/json");
+            write_audit_log(holder.conn, "records_query", 0, json({
+                {"result_count", rows.size()}
+            }));
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(json({{"error", "invalid request"}, {"message", e.what()}}).dump(), "application/json");
@@ -710,6 +1135,7 @@ void register_postgres_endpoints(httplib::Server& svr, ServerRuntime&) {
                 return;
             }
             PQclear(updated);
+            write_audit_log(holder.conn, "record_update", id, json::object());
             res.status = 200;
             res.set_content(json({{"ok", true}, {"id", id}}).dump(), "application/json");
         } catch (const std::exception& e) {
@@ -745,12 +1171,128 @@ void register_postgres_endpoints(httplib::Server& svr, ServerRuntime&) {
                 res.set_content(R"({"error":"record not found"})", "application/json");
                 return;
             }
+            write_audit_log(holder.conn, "record_delete", id, json::object());
             res.status = 200;
             res.set_content(json({{"ok", true}, {"id", id}}).dump(), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(json({{"error", "invalid request"}, {"message", e.what()}}).dump(), "application/json");
         }
+    });
+
+    svr.Post("/sdcpp/v1/postgres/rekey-master-password", [](const httplib::Request& req, httplib::Response& res) {
+        try {
+            json body = json::parse(req.body.empty() ? "{}" : req.body);
+            const std::string old_master_password = body.value("old_master_password", "");
+            const std::string new_master_password = body.value("new_master_password", "");
+            if (old_master_password.empty() || new_master_password.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"old_master_password and new_master_password are required"})", "application/json");
+                return;
+            }
+            PostgresConfig cfg = load_config();
+            if (cfg.master_password != old_master_password) {
+                res.status = 403;
+                res.set_content(R"({"error":"invalid old_master_password"})", "application/json");
+                return;
+            }
+            std::string error;
+            PgConnHolder holder;
+            if (!open_connection(cfg, holder, error)) {
+                res.status = 400;
+                res.set_content(json({{"error", error}}).dump(), "application/json");
+                return;
+            }
+            const std::string select_sql = "SELECT id FROM sdcpp_records WHERE has_password = TRUE";
+            PGresult* result = PQexec(holder.conn, select_sql.c_str());
+            if (PQresultStatus(result) != PGRES_TUPLES_OK) {
+                error = PQerrorMessage(holder.conn);
+                PQclear(result);
+                res.status = 500;
+                res.set_content(json({{"error", "rekey select failed"}, {"message", error}}).dump(), "application/json");
+                return;
+            }
+            int64_t updated_count = 0;
+            for (int i = 0; i < PQntuples(result); ++i) {
+                const int64_t id = std::stoll(PQgetvalue(result, i, 0));
+                bool has_password = false;
+                std::string cipher;
+                if (!fetch_record_for_rekey(holder.conn, id, has_password, cipher, error) || !has_password) {
+                    continue;
+                }
+                std::string image_password;
+                if (!deobfuscate_text(cipher, old_master_password, image_password)) {
+                    continue;
+                }
+                std::string next_cipher = obfuscate_text(image_password, new_master_password);
+                std::string update_sql = "UPDATE sdcpp_records SET password_cipher = "
+                                         + sql_quote(next_cipher)
+                                         + " WHERE id = " + std::to_string(id);
+                PGresult* u = PQexec(holder.conn, update_sql.c_str());
+                if (PQresultStatus(u) == PGRES_COMMAND_OK) {
+                    ++updated_count;
+                }
+                PQclear(u);
+            }
+            PQclear(result);
+            cfg.master_password = new_master_password;
+            if (!save_config(cfg, error)) {
+                res.status = 500;
+                res.set_content(json({{"error", error}}).dump(), "application/json");
+                return;
+            }
+            write_audit_log(holder.conn, "master_password_rekey", 0, json({{"updated_records", updated_count}}));
+            res.status = 200;
+            res.set_content(json({{"ok", true}, {"updated_records", updated_count}}).dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", "invalid request"}, {"message", e.what()}}).dump(), "application/json");
+        }
+    });
+
+    svr.Get("/sdcpp/v1/postgres/audit", [](const httplib::Request& req, httplib::Response& res) {
+        PostgresConfig cfg = load_config();
+        std::string error;
+        PgConnHolder holder;
+        if (!open_connection(cfg, holder, error)) {
+            res.status = 400;
+            res.set_content(json({{"error", error}}).dump(), "application/json");
+            return;
+        }
+        int limit = 100;
+        const auto limit_it = req.params.find("limit");
+        if (limit_it != req.params.end()) {
+            try {
+                limit = std::stoi(limit_it->second);
+            } catch (...) {
+                limit = 100;
+            }
+        }
+        limit = std::clamp(limit, 1, 500);
+        const std::string sql =
+            "SELECT id, created_at::text, action, record_id, details::text "
+            "FROM sdcpp_audit_log ORDER BY created_at DESC LIMIT " + std::to_string(limit);
+        PGresult* result = PQexec(holder.conn, sql.c_str());
+        if (PQresultStatus(result) != PGRES_TUPLES_OK) {
+            error = PQerrorMessage(holder.conn);
+            PQclear(result);
+            res.status = 500;
+            res.set_content(json({{"error", "audit query failed"}, {"message", error}}).dump(), "application/json");
+            return;
+        }
+        json rows = json::array();
+        for (int i = 0; i < PQntuples(result); ++i) {
+            rows.push_back({
+                {"id", std::stoll(PQgetvalue(result, i, 0))},
+                {"created_at", PQgetvalue(result, i, 1)},
+                {"action", PQgetvalue(result, i, 2)},
+                {"record_id", PQgetisnull(result, i, 3) ? json(nullptr) : json(std::stoll(PQgetvalue(result, i, 3)))},
+                {"details", json::parse(PQgetvalue(result, i, 4), nullptr, false)}
+            });
+        }
+        PQclear(result);
+        res.status = 200;
+        res.set_content(json({{"logs", rows}}).dump(), "application/json");
     });
 #endif
 }

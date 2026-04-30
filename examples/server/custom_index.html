@@ -1,0 +1,923 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>nSDcpp Custom WebUI</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #121a30;
+      --panel-2: #1a2546;
+      --text: #e9efff;
+      --muted: #95a6d4;
+      --accent: #6b8cff;
+      --accent-2: #42d4ff;
+      --border: #2d3a66;
+      --ok: #36c48f;
+      --danger: #ff6b87;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Noto Sans JP", sans-serif;
+      background: radial-gradient(1400px 800px at 0% 0%, #1a2450 0%, var(--bg) 55%);
+      color: var(--text);
+    }
+    .app {
+      max-width: 1500px;
+      margin: 16px auto;
+      padding: 0 12px 20px;
+      display: grid;
+      grid-template-columns: 460px 1fr;
+      gap: 12px;
+    }
+    .panel {
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px;
+      backdrop-filter: blur(4px);
+    }
+    .title {
+      margin: 0 0 8px;
+      font-size: 18px;
+      font-weight: 700;
+    }
+    .sub {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 10px;
+    }
+    label {
+      font-size: 12px;
+      color: var(--muted);
+      display: block;
+      margin-bottom: 6px;
+    }
+    textarea, input, select, button {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--text);
+      border-radius: 9px;
+      padding: 9px 10px;
+      font-size: 14px;
+    }
+    textarea {
+      resize: vertical;
+      min-height: 70px;
+    }
+    .row { margin-top: 8px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 8px; }
+    button {
+      cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      border: none;
+      font-weight: 600;
+      color: #04102c;
+    }
+    button.secondary {
+      background: #26355f;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    button.warn {
+      background: #3b2540;
+      color: #ffd7df;
+      border: 1px solid #67405e;
+    }
+    .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .tab.active {
+      background: linear-gradient(135deg, #7ea0ff, #60dfff);
+      color: #07142f;
+    }
+    .tab-panel { display: none; margin-top: 8px; }
+    .tab-panel.active { display: block; }
+    .inline-check {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-top: 8px;
+    }
+    .inline-check input { width: auto; }
+    .hires-wrap {
+      margin-top: 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px;
+      background: #111936;
+    }
+    .hires-title {
+      margin: 0 0 4px;
+      font-size: 12px;
+      color: #d5e0ff;
+    }
+    .preset-group {
+      margin-top: 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px;
+      background: #111936;
+    }
+    .preset-toolbar {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .preset-cat.active {
+      background: #3a4d85;
+      color: #ffffff;
+      border: 1px solid #6685df;
+    }
+    .preset-list {
+      display: grid;
+      gap: 6px;
+      max-height: 280px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .preset-btn {
+      text-align: left;
+      padding: 8px 9px;
+      font-size: 12px;
+      border-radius: 8px;
+      background: #1b284d;
+      border: 1px solid #32477d;
+      color: #e4ebff;
+    }
+    .main {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 12px;
+    }
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr auto auto auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .status { font-size: 12px; color: var(--muted); }
+    .status.ok { color: var(--ok); }
+    .status.err { color: var(--danger); }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      background: #0d1530;
+      border: 1px solid #2b3f73;
+      border-radius: 10px;
+      padding: 8px;
+      margin-top: 8px;
+      max-height: 260px;
+      overflow: auto;
+      color: #d3e2ff;
+    }
+    .hidden { display: none; }
+    .result {
+      min-height: 560px;
+      display: grid;
+      place-items: center;
+      border: 1px dashed #35508f;
+      border-radius: 12px;
+      background: rgba(11, 16, 32, 0.5);
+      overflow: hidden;
+    }
+    .result img {
+      max-width: 100%;
+      max-height: 76vh;
+      display: block;
+    }
+    .hint { color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <section class="panel">
+      <h1 class="title">nSDcpp WebUI (A1111 Style)</h1>
+      <div class="sub">Generate + DB管理 + 進捗表示(10 stepごと)</div>
+
+      <div class="tabs">
+        <button id="tabGenerate" class="tab active secondary">Generate</button>
+        <button id="tabDb" class="tab secondary">DB管理</button>
+      </div>
+
+      <div id="generatePanel" class="tab-panel active">
+        <div class="tabs">
+          <button id="tabTxt2img" class="tab active secondary">txt2img</button>
+          <button id="tabImg2img" class="tab secondary">img2img</button>
+        </div>
+        <div id="panelTxt2img" class="tab-panel active">
+          <div class="sub">テキストから画像を生成します。</div>
+        </div>
+        <div id="panelImg2img" class="tab-panel">
+          <div class="sub">入力画像から変換生成します。</div>
+          <div class="row">
+            <label for="initImage">入力画像 (img2img)</label>
+            <input id="initImage" type="file" accept="image/*" />
+          </div>
+          <div class="row">
+            <label for="denoisingStrength">Denoising Strength</label>
+            <input id="denoisingStrength" type="number" min="0" max="1" step="0.01" value="0.75" />
+          </div>
+        </div>
+
+        <div class="row">
+          <label for="prompt">Prompt</label>
+          <textarea id="prompt" placeholder="例: masterpiece, 1girl, cinematic lighting"></textarea>
+        </div>
+
+        <div class="row">
+          <label for="negativePrompt">Negative Prompt</label>
+          <textarea id="negativePrompt" placeholder="例: lowres, blurry, watermark"></textarea>
+        </div>
+
+        <div class="grid-2">
+          <div>
+            <label for="width">Width</label>
+            <input id="width" type="number" value="1024" min="64" step="64" />
+          </div>
+          <div>
+            <label for="height">Height</label>
+            <input id="height" type="number" value="1024" min="64" step="64" />
+          </div>
+        </div>
+
+        <div class="grid-3">
+          <div>
+            <label for="steps">Steps</label>
+            <input id="steps" type="number" value="28" min="1" />
+          </div>
+          <div>
+            <label for="cfgScale">CFG Scale</label>
+            <input id="cfgScale" type="number" value="7" min="1" step="0.1" />
+          </div>
+          <div>
+            <label for="seed">Seed</label>
+            <input id="seed" type="number" value="-1" />
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div>
+            <label for="samplerName">Sampler</label>
+            <select id="samplerName"></select>
+          </div>
+          <div>
+            <label for="batchSize">Batch Size</label>
+            <input id="batchSize" type="number" value="1" min="1" max="8" />
+          </div>
+        </div>
+
+        <div class="inline-check">
+          <input id="reuseSeed" type="checkbox" />
+          <label for="reuseSeed" style="margin:0;">固定 Seed を再利用する（次回も同じ Seed）</label>
+        </div>
+
+        <div class="hires-wrap">
+          <h2 class="hires-title">Hires.fix (txt2img)</h2>
+          <div class="inline-check">
+            <input id="enableHr" type="checkbox" />
+            <label for="enableHr" style="margin:0;">Hires.fix を有効化</label>
+          </div>
+          <div class="grid-2">
+            <div>
+              <label for="hrScale">Upscale Scale</label>
+              <input id="hrScale" type="number" min="1" step="0.01" value="2.0" />
+            </div>
+            <div>
+              <label for="hrUpscaler">Upscaler</label>
+              <input id="hrUpscaler" type="text" value="Latent" />
+            </div>
+          </div>
+          <div class="grid-2">
+            <div>
+              <label for="hrResizeX">Target Width (0=scale使用)</label>
+              <input id="hrResizeX" type="number" min="0" step="64" value="0" />
+            </div>
+            <div>
+              <label for="hrResizeY">Target Height (0=scale使用)</label>
+              <input id="hrResizeY" type="number" min="0" step="64" value="0" />
+            </div>
+          </div>
+          <div class="grid-2">
+            <div>
+              <label for="hrSteps">Hires Steps (0=通常steps)</label>
+              <input id="hrSteps" type="number" min="0" value="0" />
+            </div>
+            <div>
+              <label for="hrDenoise">Hires Denoising</label>
+              <input id="hrDenoise" type="number" min="0" max="1" step="0.01" value="0.7" />
+            </div>
+          </div>
+        </div>
+
+        <div class="row">
+          <button id="generateBtn">Generate</button>
+        </div>
+
+        <div class="grid-3">
+          <button id="savePresetBtn" class="secondary">設定を保存</button>
+          <button id="loadPresetBtn" class="secondary">設定を読込</button>
+          <button id="resetBtn" class="warn">初期化</button>
+        </div>
+
+        <div class="preset-group">
+          <div class="preset-toolbar">
+            <button id="catSd" class="preset-cat active secondary">SD プリセット</button>
+            <button id="catSdxl" class="preset-cat secondary">SDXL プリセット</button>
+          </div>
+          <div id="presetList" class="preset-list"></div>
+        </div>
+      </div>
+
+      <div id="dbPanel" class="tab-panel">
+        <div class="sub">PostgreSQL 管理API (`/sdcpp/v1/postgres/*`) を操作します。</div>
+        <div class="grid-2">
+          <div><label for="pgHost">Host</label><input id="pgHost" type="text" value="127.0.0.1" /></div>
+          <div><label for="pgPort">Port</label><input id="pgPort" type="number" value="5432" /></div>
+        </div>
+        <div class="grid-2">
+          <div><label for="pgUser">User</label><input id="pgUser" type="text" /></div>
+          <div><label for="pgDb">DB Name</label><input id="pgDb" type="text" /></div>
+        </div>
+        <div class="row"><label for="pgPassword">Password</label><input id="pgPassword" type="password" /></div>
+        <div class="row"><label for="pgSslmode">SSL Mode</label><input id="pgSslmode" type="text" value="prefer" /></div>
+        <div class="row"><label for="pgMasterPassword">Master Password</label><input id="pgMasterPassword" type="password" value="nSDcpp-master" /></div>
+
+        <div class="grid-3">
+          <button id="dbSaveConfigBtn" class="secondary">設定保存</button>
+          <button id="dbHealthBtn" class="secondary">接続確認</button>
+          <button id="dbMigrateBtn" class="secondary">Migrate</button>
+        </div>
+        <div class="grid-2">
+          <button id="dbStatsBtn" class="secondary">Stats取得</button>
+          <button id="dbAuditBtn" class="secondary">Audit取得</button>
+        </div>
+
+        <div class="row"><label for="dbQueryKeyword">Query Prompt Keyword</label><input id="dbQueryKeyword" type="text" /></div>
+        <div class="grid-2">
+          <div><label for="dbQueryLimit">Query Limit</label><input id="dbQueryLimit" type="number" value="20" min="1" max="200" /></div>
+          <div style="align-self:end;"><button id="dbQueryBtn" class="secondary">Records検索</button></div>
+        </div>
+
+        <div class="grid-2">
+          <div><label for="dbDeleteId">Delete Record ID</label><input id="dbDeleteId" type="number" min="1" /></div>
+          <div style="align-self:end;"><button id="dbDeleteBtn" class="warn">Record削除</button></div>
+        </div>
+
+        <div id="dbOutput" class="mono">DB操作結果がここに表示されます</div>
+      </div>
+    </section>
+
+    <section class="main">
+      <div class="panel toolbar">
+        <div id="status" class="status">準備完了</div>
+        <button id="cancelBtn" class="warn">Cancel Job</button>
+        <button id="copySeedBtn" class="secondary">Seedをコピー</button>
+        <button id="downloadBtn" class="secondary">画像保存</button>
+        <button id="swapBtn" class="secondary">縦横を入替</button>
+      </div>
+      <div class="panel result" id="resultArea">
+        <div class="hint">ここに生成画像が表示されます</div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const STORAGE_KEY = "nsdcpp_custom_ui_settings_v2";
+    const resultArea = document.getElementById("resultArea");
+    const statusEl = document.getElementById("status");
+    const dbOutput = document.getElementById("dbOutput");
+
+    const fields = {
+      prompt: document.getElementById("prompt"),
+      negativePrompt: document.getElementById("negativePrompt"),
+      width: document.getElementById("width"),
+      height: document.getElementById("height"),
+      steps: document.getElementById("steps"),
+      cfgScale: document.getElementById("cfgScale"),
+      seed: document.getElementById("seed"),
+      samplerName: document.getElementById("samplerName"),
+      batchSize: document.getElementById("batchSize"),
+      reuseSeed: document.getElementById("reuseSeed"),
+      initImage: document.getElementById("initImage"),
+      denoisingStrength: document.getElementById("denoisingStrength"),
+      enableHr: document.getElementById("enableHr"),
+      hrScale: document.getElementById("hrScale"),
+      hrUpscaler: document.getElementById("hrUpscaler"),
+      hrResizeX: document.getElementById("hrResizeX"),
+      hrResizeY: document.getElementById("hrResizeY"),
+      hrSteps: document.getElementById("hrSteps"),
+      hrDenoise: document.getElementById("hrDenoise"),
+      pgHost: document.getElementById("pgHost"),
+      pgPort: document.getElementById("pgPort"),
+      pgUser: document.getElementById("pgUser"),
+      pgPassword: document.getElementById("pgPassword"),
+      pgDb: document.getElementById("pgDb"),
+      pgSslmode: document.getElementById("pgSslmode"),
+      pgMasterPassword: document.getElementById("pgMasterPassword"),
+      dbQueryKeyword: document.getElementById("dbQueryKeyword"),
+      dbQueryLimit: document.getElementById("dbQueryLimit"),
+      dbDeleteId: document.getElementById("dbDeleteId")
+    };
+
+    const SD_PRESETS = [
+      { w: 512, h: 512, note: "1:1" },
+      { w: 448, h: 576, note: "SDTV 4:3" },
+      { w: 576, h: 448, note: "SDTV 4:3 横" },
+      { w: 384, h: 640, note: "HDTV 16:9" },
+      { w: 640, h: 384, note: "HDTV 16:9 横" },
+      { w: 384, h: 704, note: "映画ビスタ 1.85:1" },
+      { w: 704, h: 384, note: "映画ビスタ 1.85:1 横" },
+      { w: 320, h: 768, note: "シネマスコープ 2.35:1" },
+      { w: 768, h: 320, note: "シネマスコープ 2.35:1 横" },
+      { w: 384, h: 576, note: "写真フィルム 3:2" },
+      { w: 576, h: 384, note: "写真フィルム 3:2 横" },
+      { w: 512, h: 576, note: "紙A版 1.189:1" },
+      { w: 576, h: 512, note: "紙A版 1.189:1 横" },
+      { w: 448, h: 640, note: "紙B版 1.414:1" },
+      { w: 640, h: 448, note: "紙B版 1.414:1 横" }
+    ];
+
+    const SDXL_PRESETS = [
+      { w: 1024, h: 1024, note: "1:1" },
+      { w: 896, h: 1216, note: "SDTV 4:3" },
+      { w: 1216, h: 896, note: "SDTV 4:3 横" },
+      { w: 768, h: 1344, note: "HDTV 16:9" },
+      { w: 1344, h: 768, note: "HDTV 16:9 横" },
+      { w: 768, h: 1408, note: "映画ビスタ 1.85:1" },
+      { w: 1408, h: 768, note: "映画ビスタ 1.85:1 横" },
+      { w: 640, h: 1536, note: "シネマスコープ 2.35:1" },
+      { w: 1536, h: 640, note: "シネマスコープ 2.35:1 横" },
+      { w: 832, h: 1280, note: "写真フィルム 3:2" },
+      { w: 1280, h: 832, note: "写真フィルム 3:2 横" },
+      { w: 960, h: 1152, note: "紙A版 1.189:1" },
+      { w: 1152, h: 960, note: "紙A版 1.189:1 横" },
+      { w: 896, h: 1280, note: "紙B版 1.414:1" },
+      { w: 1280, h: 896, note: "紙B版 1.414:1 横" }
+    ];
+
+    const state = {
+      mainTab: "generate",
+      mode: "txt2img",
+      presetCategory: "sd",
+      lastGeneratedDataUrl: "",
+      lastSeed: null,
+      currentJobId: "",
+      progressTimer: null,
+      lastProgressStepRendered: -1,
+      lastProgressStatusRendered: ""
+    };
+
+    function setStatus(text, type) {
+      statusEl.textContent = text;
+      statusEl.className = "status" + (type ? " " + type : "");
+    }
+
+    function setMainTab(tab) {
+      state.mainTab = tab;
+      document.getElementById("tabGenerate").classList.toggle("active", tab === "generate");
+      document.getElementById("tabDb").classList.toggle("active", tab === "db");
+      document.getElementById("generatePanel").classList.toggle("active", tab === "generate");
+      document.getElementById("dbPanel").classList.toggle("active", tab === "db");
+    }
+
+    function setMode(mode) {
+      state.mode = mode;
+      document.getElementById("tabTxt2img").classList.toggle("active", mode === "txt2img");
+      document.getElementById("tabImg2img").classList.toggle("active", mode === "img2img");
+      document.getElementById("panelTxt2img").classList.toggle("active", mode === "txt2img");
+      document.getElementById("panelImg2img").classList.toggle("active", mode === "img2img");
+    }
+
+    function setPresetCategory(category) {
+      state.presetCategory = category;
+      document.getElementById("catSd").classList.toggle("active", category === "sd");
+      document.getElementById("catSdxl").classList.toggle("active", category === "sdxl");
+      renderPresetButtons();
+    }
+
+    function applyPreset(p) {
+      fields.width.value = p.w;
+      fields.height.value = p.h;
+    }
+
+    function renderPresetButtons() {
+      const root = document.getElementById("presetList");
+      const list = state.presetCategory === "sd" ? SD_PRESETS : SDXL_PRESETS;
+      root.innerHTML = "";
+      list.forEach((p) => {
+        const b = document.createElement("button");
+        b.className = "preset-btn";
+        b.textContent = `${p.w} x ${p.h} | ${p.note}`;
+        b.addEventListener("click", () => applyPreset(p));
+        root.appendChild(b);
+      });
+    }
+
+    function collectSettings() {
+      return {
+        mode: state.mode,
+        presetCategory: state.presetCategory,
+        prompt: fields.prompt.value,
+        negativePrompt: fields.negativePrompt.value,
+        width: Number(fields.width.value),
+        height: Number(fields.height.value),
+        steps: Number(fields.steps.value),
+        cfgScale: Number(fields.cfgScale.value),
+        seed: Number(fields.seed.value),
+        samplerName: fields.samplerName.value,
+        batchSize: Number(fields.batchSize.value),
+        reuseSeed: fields.reuseSeed.checked,
+        denoisingStrength: Number(fields.denoisingStrength.value),
+        enableHr: fields.enableHr.checked,
+        hrScale: Number(fields.hrScale.value),
+        hrUpscaler: fields.hrUpscaler.value,
+        hrResizeX: Number(fields.hrResizeX.value),
+        hrResizeY: Number(fields.hrResizeY.value),
+        hrSteps: Number(fields.hrSteps.value),
+        hrDenoise: Number(fields.hrDenoise.value),
+        pgHost: fields.pgHost.value,
+        pgPort: Number(fields.pgPort.value),
+        pgUser: fields.pgUser.value,
+        pgDb: fields.pgDb.value,
+        pgSslmode: fields.pgSslmode.value,
+        pgMasterPassword: fields.pgMasterPassword.value
+      };
+    }
+
+    function applySettings(s) {
+      if (!s) return;
+      setMode(s.mode || "txt2img");
+      setPresetCategory(s.presetCategory || "sd");
+      fields.prompt.value = s.prompt ?? "";
+      fields.negativePrompt.value = s.negativePrompt ?? "";
+      fields.width.value = s.width ?? 1024;
+      fields.height.value = s.height ?? 1024;
+      fields.steps.value = s.steps ?? 28;
+      fields.cfgScale.value = s.cfgScale ?? 7;
+      fields.seed.value = s.seed ?? -1;
+      fields.batchSize.value = s.batchSize ?? 1;
+      fields.reuseSeed.checked = Boolean(s.reuseSeed);
+      fields.denoisingStrength.value = s.denoisingStrength ?? 0.75;
+      fields.enableHr.checked = Boolean(s.enableHr);
+      fields.hrScale.value = s.hrScale ?? 2.0;
+      fields.hrUpscaler.value = s.hrUpscaler ?? "Latent";
+      fields.hrResizeX.value = s.hrResizeX ?? 0;
+      fields.hrResizeY.value = s.hrResizeY ?? 0;
+      fields.hrSteps.value = s.hrSteps ?? 0;
+      fields.hrDenoise.value = s.hrDenoise ?? 0.7;
+      fields.pgHost.value = s.pgHost ?? "127.0.0.1";
+      fields.pgPort.value = s.pgPort ?? 5432;
+      fields.pgUser.value = s.pgUser ?? "";
+      fields.pgDb.value = s.pgDb ?? "";
+      fields.pgSslmode.value = s.pgSslmode ?? "prefer";
+      fields.pgMasterPassword.value = s.pgMasterPassword ?? "nSDcpp-master";
+      if (s.samplerName) {
+        fields.samplerName.value = s.samplerName;
+      }
+    }
+
+    function saveSettings(showMessage = true) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(collectSettings()));
+      if (showMessage) setStatus("設定を保存しました", "ok");
+    }
+
+    function loadSettings() {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) {
+        setMainTab("generate");
+        setMode("txt2img");
+        setPresetCategory("sd");
+        return;
+      }
+      applySettings(JSON.parse(raw));
+      setStatus("設定を読み込みました", "ok");
+    }
+
+    async function fetchSamplers() {
+      try {
+        const res = await fetch("/sdapi/v1/samplers");
+        if (!res.ok) throw new Error("sampler API failed");
+        const arr = await res.json();
+        const names = arr.map((v) => v.name).filter(Boolean);
+        fields.samplerName.innerHTML = "";
+        names.forEach((name) => {
+          const op = document.createElement("option");
+          op.value = name;
+          op.textContent = name;
+          fields.samplerName.appendChild(op);
+        });
+        if (names.length === 0) {
+          fields.samplerName.innerHTML = `<option value="euler_a">euler_a</option>`;
+        }
+      } catch (_) {
+        fields.samplerName.innerHTML = `<option value="euler_a">euler_a</option>`;
+      }
+    }
+
+    function fileToDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function buildPayload() {
+      const s = collectSettings();
+      const seedForRequest = s.reuseSeed && Number.isFinite(state.lastSeed) ? state.lastSeed : s.seed;
+      const payload = {
+        prompt: s.prompt,
+        negative_prompt: s.negativePrompt,
+        clip_skip: -1,
+        width: s.width,
+        height: s.height,
+        strength: state.mode === "img2img" ? s.denoisingStrength : 0.75,
+        seed: seedForRequest,
+        batch_count: s.batchSize,
+        sample_params: {
+          sample_method: s.samplerName || "euler_a",
+          sample_steps: s.steps,
+          guidance: {
+            txt_cfg: s.cfgScale,
+            img_cfg: s.cfgScale
+          }
+        },
+        hires: {
+          enabled: s.enableHr && state.mode === "txt2img",
+          upscaler: s.hrUpscaler,
+          scale: s.hrScale,
+          target_width: s.hrResizeX,
+          target_height: s.hrResizeY,
+          steps: s.hrSteps,
+          denoising_strength: s.hrDenoise
+        },
+        output_format: "png",
+        output_compression: 100
+      };
+
+      if (state.mode === "img2img") {
+        const file = fields.initImage.files?.[0];
+        if (!file) {
+          throw new Error("img2imgでは入力画像が必要です");
+        }
+        const dataUrl = await fileToDataUrl(file);
+        payload.init_image = dataUrl;
+      }
+      return payload;
+    }
+
+    function showImage(base64Image) {
+      const img = document.createElement("img");
+      const dataUrl = "data:image/png;base64," + base64Image;
+      img.src = dataUrl;
+      img.alt = "generated image";
+      state.lastGeneratedDataUrl = dataUrl;
+      resultArea.innerHTML = "";
+      resultArea.appendChild(img);
+    }
+
+    function clearProgressTimer() {
+      if (state.progressTimer) {
+        clearInterval(state.progressTimer);
+        state.progressTimer = null;
+      }
+    }
+
+    async function pollProgressUntilDone(jobId) {
+      return new Promise((resolve) => {
+        state.lastProgressStepRendered = -1;
+        state.lastProgressStatusRendered = "";
+        state.progressTimer = setInterval(async () => {
+          try {
+            const res = await fetch(`/sdcpp/v1/jobs/${jobId}/progress`);
+            if (!res.ok) return;
+            const p = await res.json();
+            const step = Number(p.step || 0);
+            const steps = Number(p.steps || 0);
+            const pct = Number(p.percent || 0).toFixed(1);
+            const status = String(p.status || "");
+            const shouldRender =
+              p.is_done ||
+              status !== state.lastProgressStatusRendered ||
+              (step > 0 && step % 10 === 0 && step !== state.lastProgressStepRendered);
+            if (shouldRender) {
+              setStatus(`進捗: ${status} ${step}/${steps} (${pct}%)`, "");
+              state.lastProgressStepRendered = step;
+              state.lastProgressStatusRendered = status;
+            }
+            if (p.is_done) {
+              clearProgressTimer();
+              resolve();
+            }
+          } catch (_) {
+            // ignore polling error and keep polling
+          }
+        }, 700);
+      });
+    }
+
+    async function generate() {
+      setStatus("生成中...", "");
+      try {
+        const payload = await buildPayload();
+        const submit = await fetch("/sdcpp/v1/img_gen", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        if (!submit.ok) {
+          const t = await submit.text();
+          throw new Error(t || "generation failed");
+        }
+        const accepted = await submit.json();
+        state.currentJobId = accepted.id;
+        await pollProgressUntilDone(state.currentJobId);
+
+        const doneRes = await fetch(`/sdcpp/v1/jobs/${state.currentJobId}`);
+        if (!doneRes.ok) {
+          const t = await doneRes.text();
+          throw new Error(t || "failed to fetch job result");
+        }
+        const done = await doneRes.json();
+        if (done.status !== "completed") {
+          const msg = done?.error?.message || `job status: ${done.status}`;
+          throw new Error(msg);
+        }
+        const firstImage = done?.result?.images?.[0]?.b64_json;
+        if (!firstImage) throw new Error("画像が返されませんでした");
+
+        if (!Number.isFinite(state.lastSeed)) {
+          state.lastSeed = Number(payload.seed);
+        }
+        fields.seed.value = String(state.lastSeed);
+        showImage(firstImage);
+        saveSettings(false);
+        setStatus("生成完了", "ok");
+      } catch (e) {
+        setStatus("エラー: " + (e?.message || "unknown"), "err");
+      } finally {
+        clearProgressTimer();
+      }
+    }
+
+    async function cancelCurrentJob() {
+      if (!state.currentJobId) {
+        setStatus("キャンセル対象ジョブがありません", "err");
+        return;
+      }
+      try {
+        const res = await fetch(`/sdcpp/v1/jobs/${state.currentJobId}/cancel`, { method: "POST" });
+        if (!res.ok) {
+          const t = await res.text();
+          throw new Error(t || "cancel failed");
+        }
+        setStatus("キャンセル要求を送信しました", "ok");
+      } catch (e) {
+        setStatus("キャンセル失敗: " + (e?.message || "unknown"), "err");
+      }
+    }
+
+    function downloadImage() {
+      if (!state.lastGeneratedDataUrl) {
+        setStatus("保存する画像がありません", "err");
+        return;
+      }
+      const a = document.createElement("a");
+      a.href = state.lastGeneratedDataUrl;
+      a.download = "nsdcpp_output.png";
+      a.click();
+    }
+
+    function copySeed() {
+      const seedText = String(fields.seed.value || "");
+      if (!seedText) {
+        setStatus("コピーするSeedがありません", "err");
+        return;
+      }
+      navigator.clipboard.writeText(seedText).then(() => {
+        setStatus("Seedをコピーしました", "ok");
+      }).catch(() => {
+        setStatus("Seedコピーに失敗しました", "err");
+      });
+    }
+
+    function swapSize() {
+      const w = fields.width.value;
+      fields.width.value = fields.height.value;
+      fields.height.value = w;
+    }
+
+    function printDbOutput(title, obj) {
+      const body = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
+      dbOutput.textContent = `${title}\n\n${body}`;
+    }
+
+    async function callDbApi(path, method = "GET", body = null) {
+      const opt = { method, headers: {} };
+      if (body) {
+        opt.headers["Content-Type"] = "application/json";
+        opt.body = JSON.stringify(body);
+      }
+      const res = await fetch(path, opt);
+      const txt = await res.text();
+      let data = txt;
+      try { data = JSON.parse(txt); } catch (_) {}
+      if (!res.ok) throw new Error(typeof data === "string" ? data : JSON.stringify(data));
+      return data;
+    }
+
+    async function dbSaveConfig() {
+      try {
+        const out = await callDbApi("/sdcpp/v1/postgres/config", "POST", {
+          host: fields.pgHost.value,
+          port: Number(fields.pgPort.value),
+          username: fields.pgUser.value,
+          password: fields.pgPassword.value,
+          dbname: fields.pgDb.value,
+          sslmode: fields.pgSslmode.value,
+          master_password: fields.pgMasterPassword.value
+        });
+        saveSettings(false);
+        printDbOutput("Config Saved", out);
+      } catch (e) {
+        printDbOutput("Config Save Error", e.message || "unknown");
+      }
+    }
+
+    async function dbHealth() {
+      try { printDbOutput("Health", await callDbApi("/sdcpp/v1/postgres/health")); }
+      catch (e) { printDbOutput("Health Error", e.message || "unknown"); }
+    }
+    async function dbMigrate() {
+      try { printDbOutput("Migrate", await callDbApi("/sdcpp/v1/postgres/schema/migrate", "POST", {})); }
+      catch (e) { printDbOutput("Migrate Error", e.message || "unknown"); }
+    }
+    async function dbStats() {
+      try { printDbOutput("Stats", await callDbApi("/sdcpp/v1/postgres/stats")); }
+      catch (e) { printDbOutput("Stats Error", e.message || "unknown"); }
+    }
+    async function dbAudit() {
+      try { printDbOutput("Audit", await callDbApi("/sdcpp/v1/postgres/audit?limit=50")); }
+      catch (e) { printDbOutput("Audit Error", e.message || "unknown"); }
+    }
+    async function dbQuery() {
+      try {
+        const out = await callDbApi("/sdcpp/v1/postgres/query", "POST", {
+          prompt_keyword: fields.dbQueryKeyword.value,
+          limit: Number(fields.dbQueryLimit.value || 20)
+        });
+        printDbOutput("Query", out);
+      } catch (e) {
+        printDbOutput("Query Error", e.message || "unknown");
+      }
+    }
+    async function dbDeleteRecord() {
+      const id = Number(fields.dbDeleteId.value);
+      if (!Number.isInteger(id) || id <= 0) {
+        printDbOutput("Delete Error", "有効なRecord IDを入力してください");
+        return;
+      }
+      try { printDbOutput("Delete", await callDbApi(`/sdcpp/v1/postgres/records/${id}`, "DELETE")); }
+      catch (e) { printDbOutput("Delete Error", e.message || "unknown"); }
+    }
+
+    document.getElementById("generateBtn").addEventListener("click", generate);
+    document.getElementById("cancelBtn").addEventListener("click", cancelCurrentJob);
+    document.getElementById("savePresetBtn").addEventListener("click", () => saveSettings(true));
+    document.getElementById("loadPresetBtn").addEventListener("click", loadSettings);
+    document.getElementById("resetBtn").addEventListener("click", () => {
+      localStorage.removeItem(STORAGE_KEY);
+      location.reload();
+    });
+    document.getElementById("downloadBtn").addEventListener("click", downloadImage);
+    document.getElementById("copySeedBtn").addEventListener("click", copySeed);
+    document.getElementById("swapBtn").addEventListener("click", swapSize);
+
+    document.getElementById("tabGenerate").addEventListener("click", () => setMainTab("generate"));
+    document.getElementById("tabDb").addEventListener("click", () => setMainTab("db"));
+    document.getElementById("tabTxt2img").addEventListener("click", () => setMode("txt2img"));
+    document.getElementById("tabImg2img").addEventListener("click", () => setMode("img2img"));
+    document.getElementById("catSd").addEventListener("click", () => setPresetCategory("sd"));
+    document.getElementById("catSdxl").addEventListener("click", () => setPresetCategory("sdxl"));
+    document.getElementById("dbSaveConfigBtn").addEventListener("click", dbSaveConfig);
+    document.getElementById("dbHealthBtn").addEventListener("click", dbHealth);
+    document.getElementById("dbMigrateBtn").addEventListener("click", dbMigrate);
+    document.getElementById("dbStatsBtn").addEventListener("click", dbStats);
+    document.getElementById("dbAuditBtn").addEventListener("click", dbAudit);
+    document.getElementById("dbQueryBtn").addEventListener("click", dbQuery);
+    document.getElementById("dbDeleteBtn").addEventListener("click", dbDeleteRecord);
+
+    (async function init() {
+      await fetchSamplers();
+      loadSettings();
+      renderPresetButtons();
+    })();
+  </script>
+</body>
+</html>

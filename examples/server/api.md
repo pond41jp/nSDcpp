@@ -13,6 +13,19 @@ Additional persistence API:
 - `PostgreSQL Persistence API` under `/sdcpp/v1/postgres/...`
 - detailed spec: `examples/server/postgresql_api.md`
 
+## API整理ポリシー
+
+機能が似ていても、以下のように目的が異なるAPIは残します。
+
+- `OpenAI API` / `sdapi` / `sdcpp API`
+  - 役割が「互換レイヤー」と「ネイティブ非同期API」で異なるため共存
+- `GET /sdcpp/v1/jobs/{id}` / `GET /sdcpp/v1/jobs/{id}/progress`
+  - 前者はジョブ全体取得、後者は軽量な進捗ポーリング向け
+- `POST /sdcpp/v1/jobs/{id}/cancel`
+  - ジョブ制御専用で、取得系APIとは責務が異なる
+
+削除・統合対象は「同一目的で入出力がほぼ同じAPI」が出た場合のみとします。
+
 The `sdcpp API` is the native API surface.
 Its request schema is the same schema used by `sd_cpp_extra_args`.
 
